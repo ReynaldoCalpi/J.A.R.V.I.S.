@@ -1,0 +1,6 @@
+google-generativeai
+psutil
+SpeechRecognition
+pyttsx3
+PyAudio
+numpy
