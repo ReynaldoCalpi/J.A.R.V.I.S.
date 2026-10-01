@@ -1,8 +1,9 @@
 import os
 import streamlit as st
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
-# Configuración inicial de la interfaz
+# Configuración de interfaz
 st.set_page_config(page_title="J.A.R.V.I.S. AI System", page_icon="🤖", layout="centered")
 
 st.markdown("""
@@ -15,7 +16,6 @@ st.markdown("""
 
 st.title("🤖 J.A.R.V.I.S. Cloud Interface")
 
-# Carga de la API Key
 api_key = os.getenv("GEMINI_API_KEY")
 
 with st.sidebar:
@@ -29,63 +29,70 @@ if not api_key:
     st.warning("⚠️ Ingrese su API Key de Google Gemini en la barra lateral para continuar.")
     st.stop()
 
-genai.configure(api_key=api_key)
+# Inicialización del cliente con la nueva API de Interactions
+try:
+    client = genai.Client(api_key=api_key)
+except Exception as e:
+    st.error(f"❌ Error al conectar cliente: {e}")
+    st.stop()
 
-# Detección dinámica y robusta de modelos disponibles
-@st.cache_resource
-def obtener_modelo_valido():
-    try:
-        modelos_disponibles = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                modelos_disponibles.append(m.name)
-        
-        # Priorizar modelos tipo 'flash'
-        for m in modelos_disponibles:
-            if 'flash' in m:
-                return m
-        
-        # Si hay cualquier otro modelo activo en la cuenta, utilizar el primero
-        if modelos_disponibles:
-            return modelos_disponibles[0]
-    except Exception:
-        pass
-    
-    # Modelo predeterminado estándar en caso de error de lista
-    return "models/gemini-1.5-flash"
+# Guardar historial de la conversación en Streamlit
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-modelo_activo = obtener_modelo_valido()
+# Desplegar historial en pantalla
+for msg in st.session_state.messages:
+    avatar = "👤" if msg["role"] == "user" else "🤖"
+    with st.chat_message(msg["role"], avatar=avatar):
+        st.markdown(msg["content"])
 
-with st.sidebar:
-    st.info(f"Modelo activo: `{modelo_activo}`")
-
-# Inicialización del modelo de Gemini con personalidad J.A.R.V.I.S.
-model = genai.GenerativeModel(
-    model_name=modelo_activo,
-    system_instruction=(
-        "Eres J.A.R.V.I.S., la inteligencia artificial de Tony Stark. "
-        "Responde siempre en español con elegancia, brevedad, eficiencia y un trato refinado."
-    )
-)
-
-if "chat" not in st.session_state:
-    st.session_state.chat = model.start_chat(history=[])
-
-# Despliegue del historial de conversación
-for message in st.session_state.chat.history:
-    role = "user" if message.role == "user" else "assistant"
-    avatar = "👤" if role == "user" else "🤖"
-    with st.chat_message(role, avatar=avatar):
-        st.markdown(message.parts[0].text)
-
-# Entrada del usuario
+# Captura de entrada del usuario
 if prompt := st.chat_input("Aguardando sus órdenes, señor..."):
+    st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user", avatar="👤"):
         st.markdown(prompt)
 
     try:
-        response = st.session_state.chat.send_message(prompt)
+        # Estructurar historial de mensajes para la nueva API
+        contents = [
+            types.Content(
+                role="user" if m["role"] == "user" else "model",
+                parts=[types.Part.from_text(text=m["content"])]
+            )
+            for m in st.session_state.messages
+        ]
+
+        # Generación de contenido con la API de Interactions
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=(
+                    "Eres J.A.R.V.I.S., la inteligencia artificial de Tony Stark. "
+                    "Responde siempre en español con elegancia, brevedad, eficiencia y un trato refinado."
+                )
+            )
+        )
+
+        respuesta_texto = response.text
+        st.session_state.messages.append({"role": "assistant", "content": respuesta_texto})
+
         with st.chat_message("assistant", avatar="🤖"):
-            st.markdown(response.text)
+            st.markdown(respuesta_texto)
+
     except Exception as e:
-        st.error(f"❌ Error procesando la solicitud: {e}")
+        # Reintento de respaldo con modelo gemini-1.5-flash
+        try:
+            response = client.models.generate_content(
+                model="gemini-1.5-flash",
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction="Eres J.A.R.V.I.S. Responde en español con elegancia y brevedad."
+                )
+            )
+            respuesta_texto = response.text
+            st.session_state.messages.append({"role": "assistant", "content": respuesta_texto})
+            with st.chat_message("assistant", avatar="🤖"):
+                st.markdown(respuesta_texto)
+        except Exception as err_fallback:
+            st.error(f"❌ Error procesando la solicitud: {err_fallback}")
