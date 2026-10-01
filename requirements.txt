@@ -4,3 +4,5 @@ SpeechRecognition
 pyttsx3
 PyAudio
 numpy
+streamlit
+google-generativeai
