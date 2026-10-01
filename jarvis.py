@@ -2,7 +2,7 @@ import os
 import streamlit as st
 import google.generativeai as genai
 
-# Configuración inicial
+# Configuración inicial de la interfaz
 st.set_page_config(page_title="J.A.R.V.I.S. AI System", page_icon="🤖", layout="centered")
 
 st.markdown("""
@@ -15,6 +15,7 @@ st.markdown("""
 
 st.title("🤖 J.A.R.V.I.S. Cloud Interface")
 
+# Carga de la API Key
 api_key = os.getenv("GEMINI_API_KEY")
 
 with st.sidebar:
@@ -30,32 +31,35 @@ if not api_key:
 
 genai.configure(api_key=api_key)
 
-# Detección automática de modelos disponibles en tu cuenta
+# Detección dinámica y robusta de modelos disponibles
 @st.cache_resource
-def detectar_modelo_disponible():
+def obtener_modelo_valido():
     try:
         modelos_disponibles = []
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
                 modelos_disponibles.append(m.name)
         
-        # Priorizar versiones Flash disponibles
+        # Priorizar modelos tipo 'flash'
         for m in modelos_disponibles:
-            if '2.5-flash' in m or '1.5-flash' in m:
+            if 'flash' in m:
                 return m
         
+        # Si hay cualquier otro modelo activo en la cuenta, utilizar el primero
         if modelos_disponibles:
             return modelos_disponibles[0]
     except Exception:
         pass
     
-    return "models/gemini-2.5-flash"
+    # Modelo predeterminado estándar en caso de error de lista
+    return "models/gemini-1.5-flash"
 
-modelo_activo = detectar_modelo_disponible()
+modelo_activo = obtener_modelo_valido()
 
 with st.sidebar:
     st.info(f"Modelo activo: `{modelo_activo}`")
 
+# Inicialización del modelo de Gemini con personalidad J.A.R.V.I.S.
 model = genai.GenerativeModel(
     model_name=modelo_activo,
     system_instruction=(
@@ -67,12 +71,14 @@ model = genai.GenerativeModel(
 if "chat" not in st.session_state:
     st.session_state.chat = model.start_chat(history=[])
 
+# Despliegue del historial de conversación
 for message in st.session_state.chat.history:
     role = "user" if message.role == "user" else "assistant"
     avatar = "👤" if role == "user" else "🤖"
     with st.chat_message(role, avatar=avatar):
         st.markdown(message.parts[0].text)
 
+# Entrada del usuario
 if prompt := st.chat_input("Aguardando sus órdenes, señor..."):
     with st.chat_message("user", avatar="👤"):
         st.markdown(prompt)
