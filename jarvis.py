@@ -346,7 +346,7 @@ def ejecutar_jarvis(jarvis: AsistenteJARVIS, detector: DetectorWakeWord, ventana
 
 if __name__ == "__main__":
     # Asegúrate de haber configurado la variable de entorno GEMINI_API_KEY o colócala aquí directamente
-    API_KEY = os.getenv("GEMINI_API_KEY", "TU_GEMINI_API_KEY_AQUI")
+    API_KEY = os.getenv("GEMINI_API_KEY", "ismaoran24")
 
     if API_KEY == "TU_GEMINI_API_KEY_AQUI":
         print("[Error]: Configura tu clave de API de Gemini en la variable API_KEY antes de ejecutar.")
