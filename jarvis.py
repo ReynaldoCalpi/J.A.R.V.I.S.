@@ -2,8 +2,10 @@ import os
 import streamlit as st
 import google.generativeai as genai
 
+# Configuración de página
 st.set_page_config(page_title="J.A.R.V.I.S. AI System", page_icon="🤖", layout="centered")
 
+# Estilos visuales
 st.markdown("""
     <style>
     .stApp { background-color: #0b0e14; color: #00d2ff; }
@@ -28,24 +30,50 @@ if not api_key:
     st.warning("⚠️ Ingrese su API Key de Google Gemini en la barra lateral para activar los sistemas.")
     st.stop()
 
+# Configurar API Key
 genai.configure(api_key=api_key)
 
-if "chat" not in st.session_state:
-    model = genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
-        system_instruction=(
-            "Eres J.A.R.V.I.S., la inteligencia artificial de Tony Stark. "
-            "Responde en español con elegancia, brevedad y eficiencia desde esta interfaz web."
-        )
-    )
-    st.session_state.chat = model.start_chat(history=[])
+# Función para obtener el modelo disponible automáticamente
+def obtener_modelo_valido():
+    modelos_preferidos = [
+        "gemini-2.0-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-flash",
+        "gemini-pro"
+    ]
+    
+    # Intentar inicializar con la lista de preferencia
+    for nombre_modelo in modelos_preferidos:
+        try:
+            m = genai.GenerativeModel(
+                model_name=nombre_modelo,
+                system_instruction=(
+                    "Eres J.A.R.V.I.S., la inteligencia artificial de Tony Stark. "
+                    "Responde siempre en español con elegancia, brevedad, eficiencia y un trato refinado."
+                )
+            )
+            return m, nombre_modelo
+        except Exception:
+            continue
+    
+    # Fallback por defecto
+    return genai.GenerativeModel("gemini-2.0-flash"), "gemini-2.0-flash"
 
+if "chat" not in st.session_state:
+    modelo_instancia, nombre_usado = obtener_modelo_valido()
+    st.session_state.chat = modelo_instancia.start_chat(history=[])
+    st.session_state.modelo_nombre = nombre_usado
+
+st.sidebar.info(f"Modelo activo: `{st.session_state.get('modelo_nombre', 'gemini-2.0-flash')}`")
+
+# Mostrar historial
 for message in st.session_state.chat.history:
     role = "user" if message.role == "user" else "assistant"
     avatar = "👤" if role == "user" else "🤖"
     with st.chat_message(role, avatar=avatar):
         st.markdown(message.parts[0].text)
 
+# Entrada de usuario
 if prompt := st.chat_input("Aguardando sus órdenes, señor..."):
     with st.chat_message("user", avatar="👤"):
         st.markdown(prompt)
