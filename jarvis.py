@@ -39,25 +39,33 @@ except Exception as e:
     st.error(f"❌ Error al inicializar cliente: {e}")
     st.stop()
 
-# Consulta en tiempo real de modelos activos habilitados en la API Key
+# Consulta en tiempo real de modelos de texto/chat activos en la cuenta
 @st.cache_data(ttl=600)
-def obtener_modelos_cuenta(_api_key):
+def obtener_modelos_texto(_api_key):
     try:
         temp_client = genai.Client(api_key=_api_key)
         modelos_disponibles = []
+        # Palabras clave a excluir por no soportar generateContent de texto
+        excluir = [
+            "embedding", "imagen", "tts", "stt", "bison", 
+            "native-audio", "audio", "bidi", "live", "realtime"
+        ]
         for m in temp_client.models.list():
             nombre = m.name.replace("models/", "") if hasattr(m, "name") and m.name else ""
-            if nombre and not any(x in nombre for x in ["embedding", "imagen", "tts", "stt", "bison"]):
+            if nombre and not any(x in nombre.lower() for x in excluir):
                 modelos_disponibles.append(nombre)
+                
         if modelos_disponibles:
-            modelos_disponibles.sort(key=lambda x: (0 if 'flash' in x else 1, x))
+            # Priorizar modelos "flash" estándar
+            modelos_disponibles.sort(key=lambda x: (0 if 'flash' in x.lower() else 1, x))
             return modelos_disponibles
     except Exception:
         pass
-    # Respaldo actualizado según la recomendación del servidor
-    return ["gemini-3.8-flash", "gemini-1.5-flash", "gemini-1.5-flash-8b"]
+    
+    # Respaldo estático de modelos de texto comprobados
+    return ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
 
-lista_modelos = obtener_modelos_cuenta(api_key)
+lista_modelos = obtener_modelos_texto(api_key)
 
 with st.sidebar:
     st.markdown("---")
@@ -66,7 +74,7 @@ with st.sidebar:
         "Modelo principal:",
         options=lista_modelos,
         index=0,
-        help="Sincronizado dinámicamente con tu cuenta de Google AI Studio."
+        help="Modelos de texto/chat compatibles detectados en tu cuenta."
     )
 
 # Historial de mensajes
@@ -101,7 +109,7 @@ if prompt := st.chat_input("Aguardando sus órdenes, señor..."):
         temperature=0.7
     )
 
-    # Orden de prueba: Modelo elegido -> Resto de la lista de modelos activos
+    # Lista de reintentos ordenada por prioridad
     modelos_a_intentar = [modelo_preferido] + [m for m in lista_modelos if m != modelo_preferido]
 
     with st.chat_message("assistant", avatar="🤖"):
@@ -124,13 +132,13 @@ if prompt := st.chat_input("Aguardando sus órdenes, señor..."):
 
                 contenedor_respuesta.markdown(texto_acumulado)
                 exito = True
-                break  # Éxito: sale del bucle sin mostrar errores
+                break  # Éxito: finaliza bucle
 
             except Exception as e:
                 err_msg = str(e)
-                # Captura de 404, 503, 429 y conmuta silenciosamente al siguiente modelo
-                if any(k in err_msg for k in ["404", "NOT_FOUND", "503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED"]):
-                    st.toast(f"⚙️ Conmutando nodo `{mod}` -> probando alternativa...", icon="🔄")
+                # Captura de 400 (argumento inválido/modelo audio), 404, 503 y 429
+                if any(k in err_msg for k in ["400", "INVALID_ARGUMENT", "404", "NOT_FOUND", "503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED"]):
+                    st.toast(f"⚙️ Omitiendo `{mod}` por incompatibilidad/sobrecarga -> Probando siguiente nodo...", icon="🔄")
                     time.sleep(0.3)
                     continue
                 else:
@@ -140,4 +148,4 @@ if prompt := st.chat_input("Aguardando sus órdenes, señor..."):
         if exito and texto_acumulado:
             st.session_state.messages.append({"role": "assistant", "content": texto_acumulado})
         elif not exito:
-            st.error("❌ No se pudo conectar con ningún modelo activo en tu API Key. Verifica tus credenciales.")
+            st.error("❌ No se pudo conectar con ningún modelo activo de texto en tu API Key. Verifica tus credenciales.")
