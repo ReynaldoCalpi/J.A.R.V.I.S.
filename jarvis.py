@@ -6,7 +6,7 @@ from google.genai import types
 # Configuración de interfaz estilo J.A.R.V.I.S.
 st.set_page_config(page_title="J.A.R.V.I.S. AI System", page_icon="🤖", layout="centered")
 
-# Estilos CSS con retoque de brillo neón
+# Estilos CSS estilo J.A.R.V.I.S.
 st.markdown("""
     <style>
     .stApp { background-color: #0b0e14; color: #00d2ff; }
@@ -39,22 +39,40 @@ except Exception as e:
     st.error(f"❌ Error al inicializar cliente: {e}")
     st.stop()
 
-# Selección de modelos estables y gratuitos
-MODELOS_RECOMENDADOS = [
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-8b",
-    "gemini-1.5-pro"
-]
+# Consulta en tiempo real de los modelos habilitados para tu API Key
+@st.cache_data(ttl=3600)
+def obtener_modelos_disponibles(_api_key):
+    try:
+        temp_client = genai.Client(api_key=_api_key)
+        modelos_validos = []
+        for m in temp_client.models.list():
+            actions = getattr(m, 'supported_actions', []) or getattr(m, 'supported_generation_methods', [])
+            # Filtrar solo modelos aptos para chat/texto (generateContent)
+            if not actions or 'generateContent' in str(actions):
+                nombre_limpio = m.name.replace('models/', '') if m.name else ""
+                if nombre_limpio and not any(x in nombre_limpio for x in ["embedding", "imagen", "tts", "stt"]):
+                    modelos_validos.append(nombre_limpio)
+        
+        if modelos_validos:
+            # Priorizar modelos "flash" por velocidad
+            modelos_validos.sort(key=lambda x: (0 if 'flash' in x else 1, x))
+            return modelos_validos
+    except Exception:
+        pass
+    
+    # Respaldo seguro en caso de fallo de red
+    return ["gemini-2.0-flash", "gemini-1.5-flash"]
+
+lista_modelos = obtener_modelos_disponibles(api_key)
 
 with st.sidebar:
     st.markdown("---")
     st.subheader("🧠 Núcleo de IA")
     modelo_activo = st.selectbox(
-        "Modelo asignado:",
-        options=MODELOS_RECOMENDADOS,
+        "Modelo asignado dinámicamente:",
+        options=lista_modelos,
         index=0,
-        help="gemini-2.0-flash es el modelo más rápido e ideal para respuestas en tiempo real."
+        help="Lista obtenida en tiempo real desde tu cuenta de Google AI Studio."
     )
 
 # Estructura del historial de mensajes
@@ -83,7 +101,7 @@ if prompt := st.chat_input("Aguardando sus órdenes, señor..."):
             for m in st.session_state.messages
         ]
 
-        # Configuración del sistema
+        # Configuración del sistema J.A.R.V.I.S.
         configuracion_jarvis = types.GenerateContentConfig(
             system_instruction=(
                 "Eres J.A.R.V.I.S., la inteligencia artificial de Tony Stark. "
