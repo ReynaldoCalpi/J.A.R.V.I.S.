@@ -1,4 +1,5 @@
 import os
+import time
 import streamlit as st
 from google import genai
 from google.genai import types
@@ -39,40 +40,22 @@ except Exception as e:
     st.error(f"❌ Error al inicializar cliente: {e}")
     st.stop()
 
-# Consulta en tiempo real de los modelos habilitados para tu API Key
-@st.cache_data(ttl=3600)
-def obtener_modelos_disponibles(_api_key):
-    try:
-        temp_client = genai.Client(api_key=_api_key)
-        modelos_validos = []
-        for m in temp_client.models.list():
-            actions = getattr(m, 'supported_actions', []) or getattr(m, 'supported_generation_methods', [])
-            # Filtrar solo modelos aptos para chat/texto (generateContent)
-            if not actions or 'generateContent' in str(actions):
-                nombre_limpio = m.name.replace('models/', '') if m.name else ""
-                if nombre_limpio and not any(x in nombre_limpio for x in ["embedding", "imagen", "tts", "stt"]):
-                    modelos_validos.append(nombre_limpio)
-        
-        if modelos_validos:
-            # Priorizar modelos "flash" por velocidad
-            modelos_validos.sort(key=lambda x: (0 if 'flash' in x else 1, x))
-            return modelos_validos
-    except Exception:
-        pass
-    
-    # Respaldo seguro en caso de fallo de red
-    return ["gemini-2.0-flash", "gemini-1.5-flash"]
-
-lista_modelos = obtener_modelos_disponibles(api_key)
+# Lista jerárquica de modelos de menor a mayor probabilidad de saturación
+MODELOS_ORDENADOS = [
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-8b",
+    "gemini-1.5-pro"
+]
 
 with st.sidebar:
     st.markdown("---")
     st.subheader("🧠 Núcleo de IA")
-    modelo_activo = st.selectbox(
-        "Modelo asignado dinámicamente:",
-        options=lista_modelos,
+    modelo_preferido = st.selectbox(
+        "Modelo principal:",
+        options=MODELOS_ORDENADOS,
         index=0,
-        help="Lista obtenida en tiempo real desde tu cuenta de Google AI Studio."
+        help="Si el modelo seleccionado entra en sobrecarga (503), JARVIS cambiará automáticamente al modelo de respaldo."
     )
 
 # Estructura del historial de mensajes
@@ -91,44 +74,60 @@ if prompt := st.chat_input("Aguardando sus órdenes, señor..."):
     with st.chat_message("user", avatar="👤"):
         st.markdown(prompt)
 
-    try:
-        # Formato de historial para API de Google GenAI
-        contents = [
-            types.Content(
-                role="user" if m["role"] == "user" else "model",
-                parts=[types.Part.from_text(text=m["content"])]
-            )
-            for m in st.session_state.messages
-        ]
-
-        # Configuración del sistema J.A.R.V.I.S.
-        configuracion_jarvis = types.GenerateContentConfig(
-            system_instruction=(
-                "Eres J.A.R.V.I.S., la inteligencia artificial de Tony Stark. "
-                "Responde siempre en español con elegancia, alta precisión, brevedad y un trato refinado hacia el usuario, a quien te diriges como 'señor'."
-            ),
-            temperature=0.7
+    # Formato de historial para la API
+    contents = [
+        types.Content(
+            role="user" if m["role"] == "user" else "model",
+            parts=[types.Part.from_text(text=m["content"])]
         )
+        for m in st.session_state.messages
+    ]
 
-        # Respuesta en Streaming para experiencia en tiempo real
-        with st.chat_message("assistant", avatar="🤖"):
-            contenedor_respuesta = st.empty()
-            texto_acumulado = ""
+    configuracion_jarvis = types.GenerateContentConfig(
+        system_instruction=(
+            "Eres J.A.R.V.I.S., la inteligencia artificial de Tony Stark. "
+            "Responde siempre en español con elegancia, alta precisión, brevedad y un trato refinado hacia el usuario, a quien te diriges como 'señor'."
+        ),
+        temperature=0.7
+    )
 
-            response_stream = client.models.generate_content_stream(
-                model=modelo_activo,
-                contents=contents,
-                config=configuracion_jarvis
-            )
+    # Cadena de modelos a intentar (el elegido primero, luego los de respaldo)
+    modelos_a_intentar = [modelo_preferido] + [m for m in MODELOS_ORDENADOS if m != modelo_preferido]
 
-            for chunk in response_stream:
-                if chunk.text:
-                    texto_acumulado += chunk.text
-                    contenedor_respuesta.markdown(texto_acumulado + "▌")
+    with st.chat_message("assistant", avatar="🤖"):
+        contenedor_respuesta = st.empty()
+        texto_acumulado = ""
+        exito = False
 
-            contenedor_respuesta.markdown(texto_acumulado)
+        for mod in modelos_a_intentar:
+            try:
+                response_stream = client.models.generate_content_stream(
+                    model=mod,
+                    contents=contents,
+                    config=configuracion_jarvis
+                )
 
-        st.session_state.messages.append({"role": "assistant", "content": texto_acumulado})
+                for chunk in response_stream:
+                    if chunk.text:
+                        texto_acumulado += chunk.text
+                        contenedor_respuesta.markdown(texto_acumulado + "▌")
 
-    except Exception as e:
-        st.error(f"❌ Error procesando solicitud con el modelo `{modelo_activo}`: {e}")
+                contenedor_respuesta.markdown(texto_acumulado)
+                exito = True
+                break  # Conexión exitosa, salir del bucle
+
+            except Exception as e:
+                err_msg = str(e)
+                # Detección de sobrecarga de servidor (503 / 429 / UNAVAILABLE)
+                if any(k in err_msg for k in ["503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED"]):
+                    st.toast(f"⚠️ Servidores de `{mod}` sobrecargados. Conectando a nodo de respaldo...", icon="🔄")
+                    time.sleep(0.5)
+                    continue
+                else:
+                    st.error(f"❌ Error en el subsistema `{mod}`: {e}")
+                    break
+
+        if exito and texto_acumulado:
+            st.session_state.messages.append({"role": "assistant", "content": texto_acumulado})
+        elif not exito:
+            st.error("❌ Todos los nodos de procesamiento se encuentran sobrecargados. Reintentando en breve...")
