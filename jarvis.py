@@ -13,6 +13,7 @@ st.markdown("""
     .stChatMessage { background-color: #121824; border-radius: 10px; border: 1px solid #1e293b; }
     h1 { color: #00d2ff !important; font-family: 'Courier New', monospace; text-shadow: 0 0 8px #00d2ff55; }
     .stSidebar { background-color: #080a0f; }
+    div[data-testid="stFileUploader"] { background-color: #121824; border: 1px dashed #00d2ff55; border-radius: 8px; padding: 10px; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -39,33 +40,27 @@ except Exception as e:
     st.error(f"❌ Error al inicializar cliente: {e}")
     st.stop()
 
-# Consulta en tiempo real de modelos de texto/chat activos en la cuenta
+# Consulta en tiempo real de modelos multimodales activos
 @st.cache_data(ttl=600)
-def obtener_modelos_texto(_api_key):
+def obtener_modelos_multimodales(_api_key):
     try:
         temp_client = genai.Client(api_key=_api_key)
         modelos_disponibles = []
-        # Palabras clave a excluir por no soportar generateContent de texto
-        excluir = [
-            "embedding", "imagen", "tts", "stt", "bison", 
-            "native-audio", "audio", "bidi", "live", "realtime"
-        ]
+        excluir = ["embedding", "imagen", "tts", "stt", "bison", "native-audio", "audio", "bidi", "live", "realtime"]
         for m in temp_client.models.list():
             nombre = m.name.replace("models/", "") if hasattr(m, "name") and m.name else ""
             if nombre and not any(x in nombre.lower() for x in excluir):
                 modelos_disponibles.append(nombre)
                 
         if modelos_disponibles:
-            # Priorizar modelos "flash" estándar
             modelos_disponibles.sort(key=lambda x: (0 if 'flash' in x.lower() else 1, x))
             return modelos_disponibles
     except Exception:
         pass
     
-    # Respaldo estático de modelos de texto comprobados
     return ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
 
-lista_modelos = obtener_modelos_texto(api_key)
+lista_modelos = obtener_modelos_multimodales(api_key)
 
 with st.sidebar:
     st.markdown("---")
@@ -74,42 +69,97 @@ with st.sidebar:
         "Modelo principal:",
         options=lista_modelos,
         index=0,
-        help="Modelos de texto/chat compatibles detectados en tu cuenta."
+        help="Sincronizado dinámicamente con modelos multimodales activos."
     )
 
-# Historial de mensajes
+# Historial de conversación
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Desplegar conversación guardada
+# Desplegar conversación anterior (con renderizado de archivos adjuntos)
 for msg in st.session_state.messages:
     avatar = "👤" if msg["role"] == "user" else "🤖"
     with st.chat_message(msg["role"], avatar=avatar):
-        st.markdown(msg["content"])
+        if msg.get("file_bytes") and msg.get("file_type"):
+            if msg["file_type"].startswith("image/"):
+                st.image(msg["file_bytes"], caption=f"📸 Archivo visual: {msg.get('file_name')}", use_container_width=True)
+            else:
+                st.info(f"📄 Documento adjunto cargado: `{msg.get('file_name')}`")
+        if msg.get("content"):
+            st.markdown(msg["content"])
 
-# Captura de entrada del usuario
+# Módulo de carga de archivos / datos en la interfaz
+with st.expander("📎 Adjuntar imagen o documento para análisis", expanded=False):
+    archivo_adjunto = st.file_uploader(
+        "Formatos soportados: Imágenes (PNG, JPG, WEBP), PDF, TXT, CSV, JSON",
+        type=["png", "jpg", "jpeg", "webp", "pdf", "txt", "csv", "json"],
+        key="file_uploader"
+    )
+
+# Captura de orden del usuario
 if prompt := st.chat_input("Aguardando sus órdenes, señor..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user", avatar="👤"):
-        st.markdown(prompt)
+    partes_entrada = []
+    bytes_archivo = None
+    tipo_archivo = None
+    nombre_archivo = None
 
-    contents = [
-        types.Content(
-            role="user" if m["role"] == "user" else "model",
-            parts=[types.Part.from_text(text=m["content"])]
-        )
-        for m in st.session_state.messages
-    ]
+    # Procesamiento del archivo adjunto si fue seleccionado
+    if archivo_adjunto is not None:
+        bytes_archivo = archivo_adjunto.getvalue()
+        tipo_archivo = archivo_adjunto.type or "application/octet-stream"
+        nombre_archivo = archivo_adjunto.name
+        
+        # Mapeo correcto de tipos MIME para archivos de texto plano/CSV/JSON si no se detectan automáticamente
+        if nombre_archivo.endswith(".csv"):
+            tipo_archivo = "text/csv"
+        elif nombre_archivo.endswith(".json"):
+            tipo_archivo = "application/json"
+        elif nombre_archivo.endswith(".txt"):
+            tipo_archivo = "text/plain"
+
+        partes_entrada.append(types.Part.from_bytes(data=bytes_archivo, mime_type=tipo_archivo))
+
+    if prompt:
+        partes_entrada.append(types.Part.from_text(text=prompt))
+
+    # Registrar mensaje en historial
+    st.session_state.messages.append({
+        "role": "user",
+        "content": prompt,
+        "file_bytes": bytes_archivo,
+        "file_type": tipo_archivo,
+        "file_name": nombre_archivo,
+        "parts": partes_entrada
+    })
+
+    # Renderizar entrada actual en UI
+    with st.chat_message("user", avatar="👤"):
+        if bytes_archivo and tipo_archivo:
+            if tipo_archivo.startswith("image/"):
+                st.image(bytes_archivo, caption=f"📸 Archivo visual: {nombre_archivo}", use_container_width=True)
+            else:
+                st.info(f"📄 Documento adjunto cargado: `{nombre_archivo}`")
+        if prompt:
+            st.markdown(prompt)
+
+    # Reconstrucción del historial completo para enviar a Gemini
+    contents = []
+    for m in st.session_state.messages:
+        role = "user" if m["role"] == "user" else "model"
+        if m.get("parts"):
+            contents.append(types.Content(role=role, parts=m["parts"]))
+        else:
+            contents.append(types.Content(role=role, parts=[types.Part.from_text(text=m["content"])]))
 
     configuracion_jarvis = types.GenerateContentConfig(
         system_instruction=(
             "Eres J.A.R.V.I.S., la inteligencia artificial de Tony Stark. "
-            "Responde siempre en español con elegancia, alta precisión, brevedad y un trato refinado hacia el usuario, a quien te diriges como 'señor'."
+            "Responde siempre en español con elegancia, alta precisión, brevedad y un trato refinado hacia el usuario, a quien te diriges como 'señor'. "
+            "Si el usuario adjunta una imagen o un documento (PDF, CSV, JSON, TXT), analízalo en detalle y extrae las conclusiones solicitadas."
         ),
         temperature=0.7
     )
 
-    # Lista de reintentos ordenada por prioridad
     modelos_a_intentar = [modelo_preferido] + [m for m in lista_modelos if m != modelo_preferido]
 
     with st.chat_message("assistant", avatar="🤖"):
@@ -132,13 +182,12 @@ if prompt := st.chat_input("Aguardando sus órdenes, señor..."):
 
                 contenedor_respuesta.markdown(texto_acumulado)
                 exito = True
-                break  # Éxito: finaliza bucle
+                break
 
             except Exception as e:
                 err_msg = str(e)
-                # Captura de 400 (argumento inválido/modelo audio), 404, 503 y 429
                 if any(k in err_msg for k in ["400", "INVALID_ARGUMENT", "404", "NOT_FOUND", "503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED"]):
-                    st.toast(f"⚙️ Omitiendo `{mod}` por incompatibilidad/sobrecarga -> Probando siguiente nodo...", icon="🔄")
+                    st.toast(f"⚙️ Conmutando nodo `{mod}` por sobrecarga/incompatibilidad...", icon="🔄")
                     time.sleep(0.3)
                     continue
                 else:
@@ -146,6 +195,10 @@ if prompt := st.chat_input("Aguardando sus órdenes, señor..."):
                     break
 
         if exito and texto_acumulado:
-            st.session_state.messages.append({"role": "assistant", "content": texto_acumulado})
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": texto_acumulado,
+                "parts": [types.Part.from_text(text=texto_acumulado)]
+            })
         elif not exito:
-            st.error("❌ No se pudo conectar con ningún modelo activo de texto en tu API Key. Verifica tus credenciales.")
+            st.error("❌ No se pudo procesar la solicitud en ninguno de los nodos activos.")
